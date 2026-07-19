@@ -1,0 +1,19 @@
+# Binary
+*.exe
+
+# Log files
+*.log
+
+# User config (contains personal paths)
+config.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
