@@ -5,12 +5,21 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"golang.org/x/sys/windows/registry"
 )
 
 // isAutostartEnabled returns true if the GFNNetWrapper scheduled task exists.
+// Uses registry lookup instead of PowerShell to avoid console window flash.
 func isAutostartEnabled() bool {
-	_, err := runPS("Get-ScheduledTask -TaskName 'GFNNetWrapper' -ErrorAction Stop")
-	return err == nil
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tree\GFNNetWrapper`,
+		registry.READ)
+	if err != nil {
+		return false
+	}
+	key.Close()
+	return true
 }
 
 // setAutostart creates or removes a Task Scheduler entry that launches the
@@ -23,7 +32,7 @@ func setAutostart(enable bool) error {
 	if enable {
 		exe, err := os.Executable()
 		if err != nil {
-			return fmt.Errorf("не удалось получить путь к exe: %w", err)
+			return fmt.Errorf(L.ErrExePath, err)
 		}
 
 		psCmd := fmt.Sprintf(
@@ -39,7 +48,7 @@ func setAutostart(enable bool) error {
 		)
 
 		if _, err := runPS(psCmd); err != nil {
-			return fmt.Errorf("не удалось создать задачу планировщика: %w", err)
+			return fmt.Errorf(L.ErrTaskCreate, err)
 		}
 		return nil
 	}

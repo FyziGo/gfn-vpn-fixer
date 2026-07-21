@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 )
 
-// Config holds the persistent settings for GFN-Net-Wrapper.
+// Config holds the persistent settings for GFN VPN FIXER.
 type Config struct {
 	// Blacklist contains the friendly names of network adapters to disable before GFN starts.
 	Blacklist []string `json:"blacklist"`

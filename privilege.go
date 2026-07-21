@@ -58,11 +58,8 @@ func requireAdmin() {
 
 	if ret <= 32 {
 		// UAC was declined or ShellExecute failed — show a message and exit.
-		title, _ := windows.UTF16PtrFromString("GFN-Net-Wrapper — Требуются права администратора")
-		msg, _ := windows.UTF16PtrFromString(
-			"Не удалось получить права администратора.\n\n" +
-				"Подтвердите запрос UAC или запустите .exe от имени администратора вручную.",
-		)
+		title, _ := windows.UTF16PtrFromString(L.PrivilegeTitle)
+		msg, _ := windows.UTF16PtrFromString(L.PrivilegeMessage)
 		windows.MessageBox(0, msg, title, 0x00000010|0x00001000)
 	}
 

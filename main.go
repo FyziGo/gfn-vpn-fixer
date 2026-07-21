@@ -20,16 +20,24 @@ func main() {
 
 	// ── Configure logging ──────────────────────────────────────────────────
 	logPath := filepath.Join(exeDir, "gfn-wrapper.log")
+	// Rotate log if it exceeds 1 MB to prevent unbounded growth.
+	const maxLogSize = 1 << 20 // 1 MB
+	if info, statErr := os.Stat(logPath); statErr == nil && info.Size() > maxLogSize {
+		_ = os.Rename(logPath, logPath+".old")
+	}
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err == nil {
 		log.SetOutput(logFile)
 	}
 	log.SetFlags(log.Ltime | log.Lshortfile)
-	log.SetPrefix("[GFN-Wrapper] ")
+	log.SetPrefix("[GFN-VPN-FIXER] ")
 
 	// ── Parse flags ────────────────────────────────────────────────────────
 	setupFlag := flag.Bool("setup", false, "Open the GUI setup window")
 	flag.Parse()
+
+	// ── Initialize locale (must be before any UI strings are used) ────────
+	initLocale()
 
 	// ── Admin check ────────────────────────────────────────────────────────
 	// Both GUI and Launcher modes require administrator privileges.
@@ -56,8 +64,8 @@ func main() {
 		runGUI(cfg, cfgPath)
 	} else {
 		log.Println("Mode: Headless Launcher")
-		// Aggressive garbage collection to keep background memory footprint minimal
-		debug.SetGCPercent(10)
+		// Moderate garbage collection to keep background memory footprint small
+		debug.SetGCPercent(50)
 		runLauncher(cfg, cfgPath)
 	}
 }

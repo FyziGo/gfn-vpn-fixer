@@ -1,4 +1,4 @@
-module gfn-net-wrapper
+module gfn-vpn-fixer
 
 go 1.22
 

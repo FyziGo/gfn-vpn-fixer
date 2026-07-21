@@ -1,4 +1,6 @@
-# GFN-Net-Wrapper
+# Nvidia Geforce Now VPN FIXER
+
+**English** | [Русский](README.ru.md) | [Español](README.es.md)
 
 Windows utility that automatically disables specified network adapters and VPN services while GeForce NOW is running, then re-enables them when GFN exits. This prevents VPN/tunnel software (Tailscale, ZeroTier, WireGuard, etc.) from interfering with GeForce NOW's streaming.
 
@@ -20,10 +22,10 @@ Windows utility that automatically disables specified network adapters and VPN s
 
 ```powershell
 # Open the setup GUI (first run, or to change settings)
-.\gfn-net-wrapper.exe --setup
+.\gfn-vpn-fixer.exe --setup
 
 # Headless mode (normal operation, runs in system tray)
-.\gfn-net-wrapper.exe
+.\gfn-vpn-fixer.exe
 ```
 
 ## Building from source

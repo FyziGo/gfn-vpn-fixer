@@ -74,11 +74,9 @@ func DisableNetworksBatch(vpnServices []string, adapters []string) error {
 	// Stop VPN services first (non-blocking signal).
 	stopServicesAPI(vpnServices)
 
-	// Disable network adapters via SetupDi.
-	for _, adapter := range adapters {
-		if err := setAdapterState(adapter, false); err != nil {
-			log.Printf("[WinAPI] disable %q: %v", adapter, err)
-		}
+	// Disable network adapters via SetupDi — single handle, one enumeration pass.
+	if err := setAdapterStateBatch(adapters, false); err != nil {
+		return fmt.Errorf("DisableNetworksBatch: %w", err)
 	}
 	return nil
 }
@@ -86,11 +84,9 @@ func DisableNetworksBatch(vpnServices []string, adapters []string) error {
 // EnableNetworksBatch enables all specified network adapters and VPN services
 // using direct Windows API calls.
 func EnableNetworksBatch(vpnServices []string, adapters []string) error {
-	// Enable network adapters via SetupDi.
-	for _, adapter := range adapters {
-		if err := setAdapterState(adapter, true); err != nil {
-			log.Printf("[WinAPI] enable %q: %v", adapter, err)
-		}
+	// Enable network adapters via SetupDi — single handle, one enumeration pass.
+	if err := setAdapterStateBatch(adapters, true); err != nil {
+		log.Printf("[Batch] WARNING enable adapters: %v", err)
 	}
 
 	// Start VPN services.

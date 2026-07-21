@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"image"
@@ -10,7 +11,9 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
 	"runtime/debug"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -71,9 +74,15 @@ func runLauncher(cfg Config, cfgPath string) {
 		cfg.GFNPath = defaultGFNPath()
 	}
 
-	adaptersDisabled := false
+	var (
+		mu               sync.Mutex
+		adaptersDisabled bool
+		ctx, cancel      = context.WithCancel(context.Background())
+	)
 
 	disableNetworks := func() {
+		mu.Lock()
+		defer mu.Unlock()
 		if adaptersDisabled {
 			return
 		}
@@ -85,6 +94,8 @@ func runLauncher(cfg Config, cfgPath string) {
 	}
 
 	enableNetworks := func() {
+		mu.Lock()
+		defer mu.Unlock()
 		if !adaptersDisabled {
 			return
 		}
@@ -100,65 +111,109 @@ func runLauncher(cfg Config, cfgPath string) {
 		_ = exec.Command(cfg.GFNPath).Start()
 	}
 
+	// ── Safety re-enable: recover from crash / forced kill ───────────────
+	// If GFN is NOT running but some blacklisted adapters are disabled,
+	// a previous instance likely crashed without cleanup.
+	if !isGFNRunning() && len(cfg.Blacklist) > 0 {
+		stuck := findDisabledAdapters(cfg.Blacklist)
+		if len(stuck) > 0 {
+			log.Printf("[Launcher] Safety re-enable: found %d adapter(s) left disabled from previous crash", len(stuck))
+			if err := EnableNetworksBatch(cfg.VPNServices, stuck); err != nil {
+				log.Printf("[Launcher] WARNING safety re-enable: %v", err)
+			}
+		}
+	}
+
+	// ── Pre-generate tray icons (avoids re-rendering on every state change) ──
+	iconIdle := makeTrayIcon(false)
+	iconActive := makeTrayIcon(true)
+
 	// ── System tray — must run on the main goroutine ───────────────────────
 	systray.Run(func() {
-		systray.SetIcon(makeTrayIcon(false))
-		systray.SetTooltip("GFN Net Wrapper — активен")
-
-		mStatus := systray.AddMenuItem("Состояние: ожидание запуска GFN", "")
-		mStatus.Disable()
-		
-		systray.AddSeparator()
-		mLaunch := systray.AddMenuItem("🚀 Запустить GeForce NOW", "Запустить GFN вручную")
-		systray.AddSeparator()
-		mSettings := systray.AddMenuItem("⚙  Настройки", "Открыть окно настройки адаптеров")
-		systray.AddSeparator()
-		mExit := systray.AddMenuItem("✖  Выйти из обёртки", "Включить адаптеры и завершить работу")
-
-		// Memory cleanup loop
+		// Delay initial icon to avoid "unable to set icon" race with Shell_TrayWnd.
 		go func() {
-			// Free initial startup memory
+			time.Sleep(150 * time.Millisecond)
+			systray.SetIcon(iconIdle)
+		}()
+		systray.SetTooltip(L.TrayTooltip)
+
+		mStatus := systray.AddMenuItem(L.StatusWaiting, "")
+		mStatus.Disable()
+
+		systray.AddSeparator()
+		mLaunch := systray.AddMenuItem(L.MenuLaunch, L.MenuLaunchTip)
+		systray.AddSeparator()
+		mSettings := systray.AddMenuItem(L.MenuSettings, L.MenuSettingsTip)
+		systray.AddSeparator()
+		mReload := systray.AddMenuItem(L.MenuReload, L.MenuReloadTip)
+		systray.AddSeparator()
+		mExit := systray.AddMenuItem(L.MenuExit, L.MenuExitTip)
+
+		// Free initial startup memory after a short delay (one-shot).
+		go func() {
 			time.Sleep(2 * time.Second)
 			debug.FreeOSMemory()
-			
-			// Periodically force garbage collection and memory release to OS
-			for {
-				time.Sleep(1 * time.Minute)
-				debug.FreeOSMemory()
+		}()
+
+		// OS signal handler: re-enable adapters on SIGINT, SIGTERM, or console close.
+		go func() {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, os.Interrupt, os.Kill)
+			<-sigCh
+			log.Println("[Launcher] OS signal received, cleaning up...")
+			cancel()
+			mu.Lock()
+			bw := cfg.BandwidthLimitMbps
+			mu.Unlock()
+			if bw > 0 {
+				_ = RemoveBandwidthLimit()
 			}
+			enableNetworks()
+			systray.Quit()
 		}()
 
 		// Monitoring loop
 		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
 			for {
 				running := isGFNRunning()
 
-				if running && !adaptersDisabled {
+				mu.Lock()
+				disabled := adaptersDisabled
+				bwLimit := cfg.BandwidthLimitMbps
+				mu.Unlock()
+
+				if running && !disabled {
 					log.Println("[Monitor] GFN started. Disabling networks.")
 					disableNetworks()
-					if cfg.BandwidthLimitMbps > 0 {
-						log.Printf("[Monitor] Applying bandwidth limit: %d Mbps", cfg.BandwidthLimitMbps)
-						if err := ApplyBandwidthLimit(cfg.BandwidthLimitMbps); err != nil {
+					if bwLimit > 0 {
+						log.Printf("[Monitor] Applying bandwidth limit: %d Mbps", bwLimit)
+						if err := ApplyBandwidthLimit(bwLimit); err != nil {
 							log.Printf("[Monitor] WARNING bandwidth limit: %v", err)
 						}
-						mStatus.SetTitle(fmt.Sprintf("Состояние: GFN запущен, лимит %d Мбит/с", cfg.BandwidthLimitMbps))
+						mStatus.SetTitle(fmt.Sprintf(L.StatusBandwidth, bwLimit))
 					} else {
-						mStatus.SetTitle("Состояние: GFN запущен, адаптеры отключены")
+						mStatus.SetTitle(L.StatusRunning)
 					}
 					mLaunch.Disable()
-					systray.SetIcon(makeTrayIcon(true))
-				} else if !running && adaptersDisabled {
+					systray.SetIcon(iconActive)
+				} else if !running && disabled {
 					log.Println("[Monitor] GFN stopped. Re-enabling networks.")
-					if cfg.BandwidthLimitMbps > 0 {
+					if bwLimit > 0 {
 						_ = RemoveBandwidthLimit()
 					}
 					enableNetworks()
-					mStatus.SetTitle("Состояние: ожидание запуска GFN")
+					mStatus.SetTitle(L.StatusWaiting)
 					mLaunch.Enable()
-					systray.SetIcon(makeTrayIcon(false))
+					systray.SetIcon(iconIdle)
 				}
 
-				time.Sleep(2 * time.Second)
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+				}
 			}
 		}()
 
@@ -167,8 +222,11 @@ func runLauncher(cfg Config, cfgPath string) {
 			for {
 				select {
 				case <-mLaunch.ClickedCh:
-					log.Printf("[Launcher] Manually launching: %s", cfg.GFNPath)
-					_ = exec.Command(cfg.GFNPath).Start()
+					mu.Lock()
+					gfnPath := cfg.GFNPath
+					mu.Unlock()
+					log.Printf("[Launcher] Manually launching: %s", gfnPath)
+					_ = exec.Command(gfnPath).Start()
 
 				case <-mSettings.ClickedCh:
 					// Launch a new instance of ourselves with --setup.
@@ -177,14 +235,51 @@ func runLauncher(cfg Config, cfgPath string) {
 						_ = exec.Command(exe, "--setup").Start()
 					}
 
+				case <-mReload.ClickedCh:
+					newCfg, err := loadConfig(cfgPath)
+					if err != nil {
+						log.Printf("[Launcher] Config reload failed: %v", err)
+						mStatus.SetTitle(L.ReloadFail)
+					} else {
+						mu.Lock()
+						cfg = newCfg
+						if cfg.GFNPath == "" {
+							cfg.GFNPath = defaultGFNPath()
+						}
+						mu.Unlock()
+						log.Printf("[Launcher] Config reloaded from %s", cfgPath)
+						mStatus.SetTitle(L.ReloadOK)
+					}
+					// Restore normal status after 3s.
+					go func() {
+						time.Sleep(3 * time.Second)
+						mu.Lock()
+						d := adaptersDisabled
+						bw := cfg.BandwidthLimitMbps
+						mu.Unlock()
+						if d {
+							if bw > 0 {
+								mStatus.SetTitle(fmt.Sprintf(L.StatusBandwidth, bw))
+							} else {
+								mStatus.SetTitle(L.StatusRunning)
+							}
+						} else {
+							mStatus.SetTitle(L.StatusWaiting)
+						}
+					}()
+
 				case <-mExit.ClickedCh:
-					// User exits wrapper manually — re-enable adapters.
+					// User exits wrapper manually — stop monitor, re-enable adapters.
 					log.Println("[Launcher] Exiting...")
 					mExit.Disable()
-					mExit.SetTitle("Выход...")
-					
+					mExit.SetTitle(L.Exiting)
+					cancel() // stop monitoring loop to prevent concurrent enable
+
 					go func() {
-						if cfg.BandwidthLimitMbps > 0 {
+						mu.Lock()
+						bw := cfg.BandwidthLimitMbps
+						mu.Unlock()
+						if bw > 0 {
 							_ = RemoveBandwidthLimit()
 						}
 						enableNetworks()
